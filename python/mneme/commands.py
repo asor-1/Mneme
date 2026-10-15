@@ -24,7 +24,11 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+from contextlib import contextmanager
 from pathlib import Path
+
+import yaml
 
 from mneme.llvm import utils
 from mneme.mneme_logging import logger
@@ -201,6 +205,121 @@ class Move:
         return _copy_or_move(sources, dest, move=True)
 
 
+_RECORDING_FILTER_ENV_VARS = (
+    "MNEME_SKIP_RECORDINGS",
+    "MNEME_MAX_RECORDINGS",
+    "MNEME_RR_KERNELS",
+)
+
+
+def _load_recording_filter(path, parser):
+    """ Convert YAML to JSON.
+        The Mneme rt validates, so we don't do it here. 
+    """
+    try:
+        with open(path) as stream:
+            document = yaml.safe_load(stream)
+
+        if not isinstance(document, dict):
+            parser.error("The recording filter document must be a mapping")
+
+        return json.dumps(document, allow_nan=False)
+    except (OSError, yaml.YAMLError, TypeError, ValueError) as exc:
+        parser.error(f"Cannot load filter config {path!r}: {exc}")
+
+
+def _parse_recording_count(value, flag, env_name, parser):
+    try:
+        if not value.isascii() or not value.isdecimal():
+            raise ValueError()
+
+        count = int(value)
+        if count > 2**64 - 1:
+            raise ValueError()
+
+        return count
+    except ValueError:
+        parser.error(f"{flag} / {env_name} requires a nonnegative 64-bit integer")
+
+
+def _prepare_default_recording_controls(args, record_env, mode):
+    """Resolve default-mode controls or warn and remove them in other modes."""
+    count_options = (
+        (
+            "--per-kernel-skip-recordings",
+            "MNEME_SKIP_RECORDINGS",
+            args.per_kernel_skip_recordings,
+        ),
+        (
+            "--per-kernel-max-recordings",
+            "MNEME_MAX_RECORDINGS",
+            args.per_kernel_max_recordings,
+        ),
+    )
+    supplied = [name for name in _RECORDING_FILTER_ENV_VARS if name in record_env]
+    supplied.extend(flag for flag, _, value in count_options if value is not None)
+
+    if mode != "default":
+        if supplied:
+            print(
+                f"[mneme] Warning: {', '.join(supplied)} are ignored in "
+                f"{mode} filter mode; they apply only in default mode.",
+                file=sys.stderr,
+            )
+        for name in _RECORDING_FILTER_ENV_VARS:
+            record_env.pop(name, None)
+        return
+
+    for flag, env_name, value in count_options:
+        if value is None:
+            value = record_env.get(env_name)
+
+        if value is not None:
+            record_env[env_name] = str(
+                _parse_recording_count(value, flag, env_name, args.parser)
+            )
+
+
+def _prepare_recording_filter(args, record_env):
+    """Resolve CLI filtering and prepare the environment and JSON."""
+    mode = args.filter_mode
+    if mode is None:
+        mode = "config" if args.filter_config is not None else "default"
+
+    # --filter-config is shorthand for setting --filter-mode config
+    # error if the user provided a different mode or omitted the config file
+    if args.filter_config is not None and mode != "config":
+        args.parser.error("--filter-config requires --filter-mode config")
+
+    if mode == "config" and not args.filter_config:
+        args.parser.error("--filter-mode config requires --filter-config")
+
+    filter_json = None
+    if args.filter_config:
+        filter_json = _load_recording_filter(args.filter_config, args.parser)
+
+    _prepare_default_recording_controls(args, record_env, mode)
+
+    record_env.pop("MNEME_FILTER_CONFIG", None)
+    record_env["MNEME_FILTER_MODE"] = mode
+    return filter_json
+
+
+@contextmanager
+def _recording_filter_file(filter_json, record_db_dir):
+    """Keep a config-mode filter file available until the application exits."""
+    if filter_json is None:
+        yield None
+        return
+
+    with tempfile.TemporaryDirectory(
+        prefix=".mneme-filter-", dir=record_db_dir
+    ) as directory:
+        path = Path(directory) / "policy.json"
+        path.write_text(filter_json)
+        yield path
+
+
 class Record:
     """
     Record GPU kernel executions using Mneme.
@@ -231,18 +350,29 @@ class Record:
         )
 
         parser.add_argument(
+            "--filter-mode",
+            choices=["default", "scoped", "config"],
+            default=None,
+            help=(
+                "Select built-in recording defaults, application scopes, or a filter config; "
+                "defaults to config with --filter-config, otherwise default"
+            ),
+        )
+        parser.add_argument(
+            "--filter-config",
+            help="YAML or JSON recording filter file; implies --filter-mode config",
+        )
+        parser.add_argument(
             "-mr",
             "--per-kernel-max-recordings",
-            type=int,
-            default=4,
-            help="The maximum number of times to record the same GPU kernel (function) with different dynamic hashes",
+            default=None,
+            help="Maximum captures per kernel in default mode (environment or 4 if omitted)",
         )
         parser.add_argument(
             "-sr",
             "--per-kernel-skip-recordings",
-            type=int,
-            default=0,
-            help="The number of matching GPU kernel launches to skip before recording each kernel",
+            default=None,
+            help="Launches to skip per kernel in default mode (environment or 0 if omitted)",
         )
         parser.add_argument(
             "--epilogue-format",
@@ -258,8 +388,9 @@ class Record:
             help=(
                 "Restrict recording to a comma-separated set of MPI ranks "
                 "(e.g. '0', '0,1,3'), or 'all' for every rank. "
-                "When omitted, distributed runs default to recording on rank 0 only; "
-                "single-process runs always record."
+                "Overrides MNEME_RECORD_RANKS and filter-file defaults.ranks. "
+                "Without any rank setting, distributed runs record on rank 0; "
+                "single-process runs record."
             ),
         )
         parser.add_argument(
@@ -285,15 +416,15 @@ class Record:
 
         cmd = args.cmd[idx + 1 :]
         record_env = os.environ.copy()
+
+        filter_json = _prepare_recording_filter(args, record_env)
+
         librecord_path = utils.get_mneme_record_library_name()
         logger.debug(f"LD_PRELOAD={librecord_path}")
         record_env["LD_PRELOAD"] = librecord_path
         logger.debug(f"MNEME_PAGE_SIZE={args.virtual_address_space_size}")
         record_env["MNEME_PAGE_SIZE"] = str(args.virtual_address_space_size)
-        logger.debug(f"MNEME_MAX_RECORDINGS={args.per_kernel_max_recordings}")
-        record_env["MNEME_MAX_RECORDINGS"] = str(args.per_kernel_max_recordings)
-        logger.debug(f"MNEME_SKIP_RECORDINGS={args.per_kernel_skip_recordings}")
-        record_env["MNEME_SKIP_RECORDINGS"] = str(args.per_kernel_skip_recordings)
+
         record_db_dir = Path(args.record_db_dir).resolve()
         if record_db_dir.exists() and not record_db_dir.is_dir():
             raise NotADirectoryError(f"Path '{args.record_db_dir}' is not a directory")
@@ -317,14 +448,25 @@ class Record:
             record_env["MNEME_LOG_LEVEL"] = verbosity
 
         try:
-            result = subprocess.run(cmd, env=record_env)
-            return result.returncode
-        except FileNotFoundError:
-            parser.error(f"Executable '{cmd[0]}' not found")
-        except PermissionError:
-            parser.error(f"Executable '{cmd[0]}' is not executable")
-        except OSError as e:
-            parser.error(f"Failed to execute '{cmd[0]}': {e.strerror}")
+            with _recording_filter_file(filter_json, record_db_dir) as filter_path:
+                if filter_path is not None:
+                    record_env["MNEME_FILTER_CONFIG"] = str(filter_path)
+
+                try:
+                    result = subprocess.run(cmd, env=record_env)
+                except FileNotFoundError:
+                    parser.error(f"Executable '{cmd[0]}' not found")
+                except PermissionError:
+                    parser.error(f"Executable '{cmd[0]}' is not executable")
+                except OSError as exc:
+                    parser.error(f"Failed to execute '{cmd[0]}': {exc.strerror}")
+        except OSError as exc:
+            parser.error(
+                f"Failed to manage temporary recording filter in "
+                f"'{record_db_dir}': {exc}"
+            )
+
+        return result.returncode
 
 
 class Config:

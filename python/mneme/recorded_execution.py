@@ -398,7 +398,7 @@ class RecordedExecution:
         Each :class:`KernelInstance` stores:
 
           - Launch parameters (grid, block, shared memory)
-          - Dynamic hash (identifies the runtime instance)
+          - Dynamic hash (the record ID, identifying the launch configuration)
           - Available specialization indices (derived from specialization flags)
           - Snapshot file paths for prologue and epilogue
 

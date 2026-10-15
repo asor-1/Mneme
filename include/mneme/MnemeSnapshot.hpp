@@ -13,11 +13,9 @@
 #include <llvm/Support/raw_ostream.h>
 #include <memory>
 #include <optional>
-#include <regex>
 #include <unordered_map>
 #include <vector>
 
-#include "llvm/Demangle/Demangle.h"
 #include <llvm/ADT/StableHashing.h>
 #include <llvm/ADT/StringRef.h>
 #include <llvm/Bitcode/BitcodeReader.h>
@@ -37,6 +35,7 @@
 #include "mneme/MnemeLLVMUtils.hpp"
 #include "mneme/MnemeLogger.hpp"
 #include "mneme/MnemeMemory.hpp"
+#include "mneme/MnemeRecordingPolicy.hpp"
 #include "mneme/MnemeSnapshotFormat.hpp"
 #include "mneme/MnemeSnapshotRecords.hpp"
 #include "mneme/MnemeUtils.hpp"
@@ -207,7 +206,7 @@ class KernelInstancesCollection {
   uint64_t VASize;
   llvm::DenseMap<uint64_t, KernelInstance> Instances;
   uint64_t NumRecords;
-  int MaxRecordings;
+  uint64_t MaxRecordings;
   llvm::SmallVector<size_t> KernelArgSizes;
   llvm::SmallVector<std::string> KernelArgNames;
   llvm::SmallVector<bool> KernelSpecializations;
@@ -270,10 +269,7 @@ public:
         util::pointerToHexString(reinterpret_cast<uint8_t *>(VAddr));
     Collection["VASize"] = VASize;
     Collection["KernelName"] = KName;
-    std::size_t pos = KName.find("__intern__");
-    std::string Orig =
-        (pos != std::string::npos) ? KName.substr(0, pos) : KName;
-    Collection["DemangledName"] = llvm::demangle(Orig);
+    Collection["DemangledName"] = util::demangleKernelName(KName);
     Collection["Modules"] = llvm::json::Array(ModuleFiles);
     Collection["BinaryBlobs"] = llvm::json::Array();
     Collection["ArgNames"] = llvm::json::Array(KernelArgNames);
@@ -290,7 +286,7 @@ public:
   KernelInstancesCollection(const std::string &MnemeDirectory, void *VAddr,
                             uint64_t VASize,
                             const proteus::runtime::KernelMetadata &KInfo,
-                            int MaxRecordings, bool CopySource)
+                            uint64_t MaxRecordings, bool CopySource)
       : VAddr(VAddr), VASize(VASize), MaxRecordings(MaxRecordings),
         NumRecords(0), KName(KInfo.getName()) {
     const auto &BitcodeBytes = KInfo.getBitcode();
@@ -389,28 +385,20 @@ public:
 
 class RecordDatabase {
   std::filesystem::path MnemeDirectory;
-  std::regex KernelWhiteList;
-  std::string RegexStr;
-  bool HasRegex;
   llvm::DenseMap<uint64_t, KernelInstancesCollection> KernelRecords;
-  llvm::DenseMap<uint64_t, uint64_t> KernelLaunchCounts;
-  uint64_t MaxRecordings;
-  uint64_t SkipRecordings;
+  struct KernelLaunchState {
+    KernelRecordingPolicy Policy;
+    uint64_t Count = 0;
+  };
+  llvm::DenseMap<uint64_t, KernelLaunchState> KernelLaunches;
   EpilogueSnapshotType EpilogueType;
   bool CopySource;
 
 public:
-  RecordDatabase() : KernelWhiteList(""), HasRegex(false) {
+  RecordDatabase() {
     const auto &Conf = Config::get();
-    if (Conf.KernelRegex) {
-      HasRegex = true;
-      RegexStr = *Conf.KernelRegex;
-      KernelWhiteList = RegexStr;
-    }
 
     MnemeDirectory = Conf.getDataDirectory();
-    MaxRecordings = Conf.MaxRecordings;
-    SkipRecordings = Conf.SkipRecordings;
     EpilogueType = Conf.EpilogueType;
     CopySource = Conf.CopySource;
   }
@@ -442,19 +430,6 @@ public:
     }
   }
 
-  bool shouldRecord(const std::string &KernelName) const {
-    if (!HasRegex)
-      return true;
-
-    try {
-      return std::regex_search(KernelName, KernelWhiteList) ||
-             std::regex_search(llvm::demangle(KernelName), KernelWhiteList);
-    } catch (const std::regex_error &e) {
-      LOG_WARN("Invalid regex: {}, ... falling back and recording everything");
-    }
-    return true;
-  }
-
   template <DeviceVendors VendorTypes>
   std::optional<std::function<
       void(llvm::DenseMap<void *, MnemeMemoryBlob<VendorTypes>> &, void **,
@@ -465,22 +440,23 @@ public:
       llvm::DenseMap<void *, MnemeMemoryBlob<VendorTypes>> &DeviceMemory,
       dim3 &GridDim, dim3 &BlockDim, void **Args, size_t SharedMem,
       typename DeviceTraits<VendorTypes>::DeviceStream_t Stream) {
-    if (!shouldRecord(KInfo.getName())) {
-      LOG_INFO("Skip record of Kernel");
-      return std::nullopt;
-    }
 
     auto StaticHash = KInfo.getStaticHash();
-    uint64_t &LaunchCount = KernelLaunchCounts[StaticHash];
-    LaunchCount++;
-    if (LaunchCount <= SkipRecordings) {
-      LOG_DEBUG("Skipping recording {} of {} for kernel {}", LaunchCount,
-                SkipRecordings, KInfo.getName());
-      return std::nullopt;
+    auto [StateIt, Inserted] = KernelLaunches.try_emplace(StaticHash);
+    auto &State = StateIt->second;
+    if (Inserted) {
+      // Match the same original name displayed in the recording database.
+      auto Name = KInfo.getName();
+      State.Policy = RecordingPolicy::get().resolve(
+          util::demangleKernelName(Name), Name);
     }
 
+    ++State.Count;
+    if (!State.Policy.selects(State.Count))
+      return std::nullopt;
+
     auto IT = KernelRecords.try_emplace(StaticHash, getDir(), VAddr, VASize,
-                                        KInfo, MaxRecordings, CopySource);
+                                        KInfo, State.Policy.MaxRecords, CopySource);
     if (IT.second)
       LOG_INFO("Created instance");
     return IT.first->second.takeSnapshot<VendorTypes>(
