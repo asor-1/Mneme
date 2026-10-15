@@ -13,7 +13,7 @@ result against the recorded output.
 
 Use the Mneme repo, its build files, and installed CLI help to determine supported toolchains and syntax. The [repository](https://github.com/llnl/Mneme) and [documentation](https://software.llnl.gov/Mneme/) may need a newer revision than the installed package.
 
-Read [recording and replay](references/record-replay.md) when preparing an application, inspecting recordings, or changing replay settings. Read [tuning](references/tuning.md) before doing anything tuning related. These references are in-depth explanation about the concept in relation to Mneme and HPC.
+Read [recording and replay](references/record-replay.md) when preparing an application, inspecting recordings, or changing replay settings. Read [tuning](references/tuning.md) before doing anything tuning related.
 
 ## Setup
 
@@ -23,13 +23,13 @@ Keep large caches, environments, toolchains, and temporary files under the user'
 
 Load the required site modules before building. On nodes without GPUs, specify the intended architecture instead of relying on device detection. CUDA builds using scikit-build-core can accept `--config-settings=cmake.define.CMAKE_CUDA_ARCHITECTURES=<target>` through `uv pip install`; choose the target for the allocated GPU. Follow the separate HIP instructions for AMD GPUs.
 
-Use the compilers and CMake integration required by the installed Mneme. Check `mneme config cc`, `mneme config cxx`, and `mneme config cmakedir` where available. `mneme_DIR` must contain `mnemeConfig.cmake`, sometimes inside a `mneme` subdirectory of the reported path. CLI imports can require GPU driver libraries, so a login-node `libcuda.so.1` error may require checking inside a GPU allocation.
+Use the compilers and CMake integration required by the installed Mneme. Check `mneme config cc`, `mneme config cxx`, and `mneme config cmakedir` where available. `mneme_DIR` must contain `mnemeConfig.cmake`, sometimes inside a `mneme` subdirectory of the reported path.
 
 ## Examples
 
-There is a CUDA example in `scripts/vec_add_ex/vec_add.cu` and the CMake file at `scripts/vec_add_ex/CMakeLists.txt` provide a small recording workload. This example does not define the workflow for other applications or HIP.
+There is a CUDA vector-add example in the Mneme repo at this link [CUDA vector-add example](https://github.com/llnl/Mneme/blob/develop/examples/cuda_vec_add/vec_add.cu) and its [CMake file](https://github.com/llnl/Mneme/blob/develop/examples/cuda_vec_add/CMakeLists.txt). This example provides a small recording workload. Other applications and AMD HIP follow a similar workflow of CMake instrumentation, record, and replay.
 
-The [Python tuning example](scripts/tune_threads.py) shows the SearchSpace and executor APIs from the supplied example. This python file can be run with the vec_add_ex. Its failure scoring has been corrected and basic timing checks added. Read the tuning reference before adapting it; its broad search and one-dimensional block assumptions are not general defaults.
+Mneme also supports tuning kernels to find the best configurations that still keep the recorded result. The [Python tuning example](scripts/tune_threads.py) shows the SearchSpace and executor APIs from the supplied example. This python file can be run with the vector add example. Failed trials are marked with Optuna's FAIL state. Read the tuning reference before adapting it.
 
 
 ## System Software and Hardware

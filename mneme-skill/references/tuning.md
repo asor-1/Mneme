@@ -22,16 +22,15 @@ Start with one worker on an allocated GPU. Bound the trial count and runtime, re
 
 ## Using the supplied script
 
-[scripts/tune_threads.py](../scripts/tune_threads.py) shows the recorded execution loading, SearchSpace mapping, Optuna sampling, and executor cleanup. Its original maximization study assigned a huge positive score to failures; this copy marks those trials failed instead and checks timing samples.
+[scripts/tune_threads.py](../scripts/tune_threads.py) shows the recorded execution loading, SearchSpace mapping, Optuna sampling, and executor cleanup. It does not explicitly validate timing samples before calculating their mean.
 
-The script assumes one-dimensional blocks, preserves the recorded grid, and searches several parameter families at once. Use it as an API example, or narrow it for an initial experiment. It rejects recordings with non-unit block y/z dimensions. Its upper bound of 1024 still needs checking against the target GPU and kernel.
+The script assumes one-dimensional blocks, preserves the recorded grid, and searches several parameter families at once. Use it as an API example, or narrow it for an initial experiment. Its upper bound of 1024 still needs checking against the target GPU and kernel.
 
 ```sh
 python scripts/tune_threads.py --record-db <database.json> --record-id <instance-id> --num-trials 10
 ```
 
-Run from a fresh writable experiment directory because this example writes to `./results`. Review the derived settings and installed APIs before execution. This bundled revision has received Python syntax checks, not an HPC runtime test.
 
-## Keeping results
+## Saving results
 
-Save: recording identity, Mneme commit, toolchain and GPU information, search definition, objective, baseline, winning configuration, raw timings, and failed-trial count.
+Save the recording database path and selected instance ID so the tuned kernel can be identified. Then also record the relevant objectives and parameters used for the experiment such as the GPU model, search space, and objective used for the experiment. Also keep the baseline and best verified configurations with their timing samples and the number of failed trials.

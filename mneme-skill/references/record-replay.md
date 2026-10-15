@@ -1,6 +1,6 @@
 # Recording and replay
 
-Mneme captures GPU kernel executions so they can be replayed separately from the application. Build-time instrumentation preserves the kernel IR and the recording records the launch and device memory state. The replay restores the input state, recompiles and executes the kernel, then checks the resulting memory against the recording.
+Mneme captures GPU kernel executions so they can be replayed separately from the application. Build-time instrumentation preserves the kernel IR and the recording captures the launch and device memory state. The replay restores the input state, recompiles and executes the kernel, then checks the resulting memory against the recording.
 
 This follows the supplied [concepts overview](https://software.llnl.gov/Mneme/concepts/overview/) and [replay configuration](https://software.llnl.gov/Mneme/concepts/replay-configuration/) documentation. Confirm details against the user's checkout.
 
@@ -36,5 +36,3 @@ The pass pipeline is positional and needs shell quoting. Omitted launch dimensio
 Replay configurations can control grid and block dimensions, dynamic shared memory, specialization, LLVM passes, backend optimization, and launch bounds. `passes` and `codegen_opt` affect different compilation stages. Only use flags exposed by installed help; a Python configuration field does not necessarily have a CLI option.
 
 Geometry changes must respect kernel indexing, synchronization, and device limits. Count all block dimensions when calculating threads per block. When launch bounds are enabled, `max_threads` must accommodate that total. Specialization uses information from the recorded invocation; do not assume it generalizes to other inputs.
-
-The documented Python configuration provides `is_valid()`, `ground()`, `to_dict()`, and `hash()`. Check their installed semantics. Normalization can remove inactive launch-bound settings, but does not prove a configuration is correct for the kernel. The supplied documentation requires `prune` and `internalize` to be true; do not expose them as tuning choices without confirming support in the installed revision.
