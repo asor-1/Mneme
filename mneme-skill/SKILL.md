@@ -27,7 +27,7 @@ Use the compilers and CMake integration required by the installed Mneme. Check `
 
 ## Examples
 
-There is a CUDA vector-add example in the Mneme repo at this link [CUDA vector-add example](https://github.com/llnl/Mneme/blob/develop/examples/cuda_vec_add/vec_add.cu) and its [CMake file](https://github.com/llnl/Mneme/blob/develop/examples/cuda_vec_add/CMakeLists.txt). This example provides a small recording workload. Other applications and AMD HIP follow a similar workflow of CMake instrumentation, record, and replay.
+There is a CUDA vector-add example in the Mneme repo at this link [CUDA vector-add example](scripts/vec_add_ex/vec_add.cu) and its [CMake file](scripts/vec_add_ex/CMakeLists.txt). This example provides a small recording workload. Other applications and AMD HIP follow a similar workflow of CMake instrumentation, record, and replay.
 
 Mneme also supports tuning kernels to find the best configurations that still keep the recorded result. The [Python tuning example](scripts/tune_threads.py) shows the SearchSpace and executor APIs from the supplied example. This python file can be run with the vector add example. Failed trials are marked with Optuna's FAIL state. Read the tuning reference before adapting it.
 
